@@ -6,7 +6,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 module Fun.Graph where
 
-import Control.Lens (toListOf)
+import Control.Lens (toListOf, foldlOf')
 import Control.Monad.State (runState, MonadState (..), evalState)
 import Control.Monad.Reader (ReaderT (runReaderT), MonadReader (..), asks)
 import Data.HashMap.Strict (HashMap)
@@ -42,6 +42,7 @@ data Graph = Graph
   { graphNext :: !Ref
   , graphIntern :: !(HashMap GExpr Ref)
   , graphNodes :: !(HashMap Ref GExpr)
+  , graphParents :: !(HashMap Ref [Ref])
   }
 
 freeVars :: Graph -> [Var]
@@ -58,6 +59,11 @@ graphInsert gexp g = case HashMap.lookup gexp (graphIntern g) of
       { graphNext = succRef (graphNext g)
       , graphIntern = HashMap.insert gexp (graphNext g) (graphIntern g)
       , graphNodes = HashMap.insert (graphNext g) gexp (graphNodes g)
+      , graphParents =
+          foldlOf' refs
+            (\parents child -> HashMap.insertWith (++) child [graphNext g] parents)
+            (graphParents g)
+            gexp
       }
     )
   Just ref -> (ref, g)
@@ -67,6 +73,7 @@ graphEmpty = Graph
   { graphNext = Ref 0
   , graphNodes = HashMap.empty
   , graphIntern = HashMap.empty
+  , graphParents = HashMap.empty
   }
 
 fromAst :: Expr -> (Ref, Graph)
@@ -103,14 +110,48 @@ toAst (root, g) = evalState (go root) (Var 0)
             e2 <- go g2
             pure $ EPlus e1 e2
 
-    -- free = HashSet.fromList $ freeVars g
+toAstWithSharing :: (Ref, Graph) -> Expr
+toAstWithSharing (root, g) = evalState (runReaderT (go root pure) HashMap.empty) (Var 0)
+  where
+    go ref cont = asks (HashMap.lookup ref) >>= \case
+      -- Not shared
+      Nothing -> do
+        case HashMap.lookup ref (graphNodes g) of
+          Nothing -> error $ "Invariant violated: unknown graph ref " ++ show ref
+          Just gexpr -> case gexpr of
+            GInt i -> shared ref (EInt i) cont
+            GFree v -> shared ref (EVar v) cont
+            GPlus g1 g2 ->
+              go g1 $ \e1 ->
+                go g2 $ \e2 ->
+                  shared ref (EPlus e1 e2) cont
+      -- Shared
+      Just expr -> cont expr
 
-    -- freshVar = do
-    --   next <- get
-    --   put $! next + 1
-    --   if HashSet.member next free
-    --     then freshVar
-    --     else pure next
+    free = HashSet.fromList $ freeVars g
+
+    shared ref expr cont = do
+      let numUses = maybe 0 length $ HashMap.lookup ref (graphParents g)
+      if numUses > 1 && not (shouldInline expr)
+        then do
+          var <- freshVar
+          local (HashMap.insert ref (EVar var)) $ do
+            inner <- cont (EVar var)
+            pure $ ELet var expr inner
+        else do
+          cont expr
+
+    shouldInline = \case
+      EInt{} -> True
+      EVar{} -> True
+      _ -> False
+
+    freshVar = do
+      next@(Var nextId) <- get
+      put $! Var $! nextId + 1
+      if HashSet.member next free
+        then freshVar
+        else pure next
 
 dot :: Graph -> String
 dot g = unlines $ header ++ nodes ++ footer
