@@ -13,6 +13,7 @@ data Expr
   | EPlus Expr Expr
   | ELet Var Expr Expr
   | EVar Var
+  deriving (Show)
 
 newtype Var = Var Int
   deriving stock (Show, Eq, Ord)

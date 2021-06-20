@@ -1,6 +1,7 @@
 module Main where
 
-import Lib (fun)
+import System.IO (hPutStrLn, stderr)
+
 
 import Fun.Ast
 
@@ -17,3 +18,4 @@ main = do
     (root, graph) = Graph.fromAst prog
 
   putStrLn $ Graph.dot graph
+  hPutStrLn stderr $ show $ Graph.toAst (root, graph)
