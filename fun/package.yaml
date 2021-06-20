@@ -1,8 +1,8 @@
-name: acme-foo
+name: fun
 maintainer: ACME
 category: Other
-synopsis: Does ACME things.
-description: Does ACME things.
+synopsis: A functional language.
+description: Experiments implementing a simple functional language in Haskell.
 version: '0.1'
 
 extra-source-files:
@@ -18,25 +18,29 @@ dependencies:
 - base
 - bytestring
 - clock
+- containers
 - conduit
 - conduit-extra
 - deepseq
+- hashable
 - hspec
+- lens
 - mtl
 - network
 - optparse-applicative
 - QuickCheck
 - text
 - transformers
+- unordered-containers
 - vector
 
 library:
   source-dirs: src
 
 executables:
-  acme-foo:
+  fun:
     dependencies:
-      - acme-foo
+      - fun
     ghc-options:
       - -rtsopts
       - -threaded
@@ -44,9 +48,9 @@ executables:
     main: app/Main.hs
 
 tests:
-  acme-foo-tests:
+  fun-tests:
     dependencies:
-      - acme-foo
+      - fun
     ghc-options:
       - -rtsopts
       - -threaded

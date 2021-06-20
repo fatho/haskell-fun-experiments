@@ -1,7 +1,7 @@
 resolver: ghc-8.10
 
 packages:
-  - acme-foo
+  - fun
 
 rebuild-ghc-options: true
 

@@ -8,6 +8,7 @@ haskellPackages: with haskellPackages; [
   conduit-extra
   containers
   hspec
+  lens
   network
   optparse-applicative
   unordered-containers
