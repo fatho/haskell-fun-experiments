@@ -16,5 +16,8 @@ in
 
       # Nix tools
       niv
+
+      # Other tools
+      graphviz
     ];
   }

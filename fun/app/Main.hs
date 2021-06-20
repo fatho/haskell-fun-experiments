@@ -4,6 +4,8 @@ import Lib (fun)
 
 import Fun.Ast
 
+import qualified Fun.Graph as Graph
+
 main :: IO ()
 main = do
   let
@@ -12,5 +14,6 @@ main = do
       $ ELet (Var 1) (EPlus (EVar (Var 0)) (EPlus (EVar (Var 0)) (EInt 10)))
       $ EPlus (EVar (Var 0)) (EVar (Var 1))
 
-  run prog >>= print
-  fun
+    (root, graph) = Graph.fromAst prog
+
+  putStrLn $ Graph.dot graph

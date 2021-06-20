@@ -6,6 +6,7 @@ module Fun.Ast where
 
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import Data.Hashable ( Hashable )
 
 data Expr
   = EInt Int
@@ -14,7 +15,8 @@ data Expr
   | EVar Var
 
 newtype Var = Var Int
-  deriving (Eq, Ord, Show)
+  deriving stock (Show, Eq, Ord)
+  deriving newtype (Hashable)
 
 
 run :: MonadFail m => Expr -> m Int
