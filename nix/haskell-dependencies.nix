@@ -9,6 +9,7 @@ haskellPackages: with haskellPackages; [
   containers
   hspec
   lens
+  kan-extensions
   network
   optparse-applicative
   unordered-containers
