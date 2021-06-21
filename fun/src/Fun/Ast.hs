@@ -1,3 +1,4 @@
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveFoldable #-}
 {-# LANGUAGE DeriveFunctor #-}
@@ -66,30 +67,34 @@ eval env expr = case expr of
 
 evalOp :: MonadFail m => Op Value -> m Value
 evalOp = \case
-  OpPlus a b -> op AsInt AsInt VInt (+) a b
-  OpMinus a b -> op AsInt AsInt VInt (-) a b
-  OpMult a b -> op AsInt AsInt VInt (*) a b
-  OpDiv a b -> op AsInt AsInt VInt div a b
-  OpLt a b -> op AsInt AsInt VBool (<) a b
-  OpLeq a b -> op AsInt AsInt VBool (<=) a b
-  OpGt a b -> op AsInt AsInt VBool (>) a b
-  OpGeq a b -> op AsInt AsInt VBool (>=) a b
-  OpEq a b -> op AsInt AsInt VBool (==) a b
-  OpNeq a b -> op AsInt AsInt VBool (/=) a b
-  OpOr a b -> op AsBool AsBool VBool (||) a b
-  OpAnd a b -> op AsBool AsBool VBool (&&) a b
+  OpPlus a b -> op ((+) @Int) a b
+  OpMinus a b -> op ((-) @Int) a b
+  OpMult a b -> op ((*) @Int) a b
+  OpDiv a b -> op (div @Int) a b
+  OpLt a b -> op ((<) @Int) a b
+  OpLeq a b -> op ((<=) @Int) a b
+  OpGt a b -> op ((>) @Int) a b
+  OpGeq a b -> op ((>=) @Int) a b
+  OpEq a b -> op ((==) @Int) a b
+  OpNeq a b -> op ((/=) @Int) a b
+  OpOr a b -> op (||) a b
+  OpAnd a b -> op (&&) a b
 
-op :: MonadFail m => As a -> As b -> (c -> Value) -> (a -> b -> c) -> Value -> Value -> m Value
-op lt rt out f l r = fmap out $ f <$> as lt l <*> as rt r
+op :: (MonadFail m, Literal a, Literal b, Literal c) => (a -> b -> c) -> Value -> Value -> m Value
+op f l r = fmap toLit $ f <$> fromLit l <*> fromLit r
 
-as :: MonadFail m => As a -> Value -> m a
-as AsInt = \case
-  VInt i -> pure i
-  other -> fail $ show other ++ " is not an int"
-as AsBool = \case
-  VBool b -> pure b
-  other -> fail $ show other ++ " is not a bool"
+class Literal a where
+  fromLit :: MonadFail m => Value -> m a
+  toLit :: a -> Value
 
-data As a where
-  AsInt :: As Int
-  AsBool :: As Bool
+instance Literal Int where
+  fromLit = \case
+    VInt i -> pure i
+    other -> fail $ show other ++ " is not an int"
+  toLit = VInt
+
+instance Literal Bool where
+  fromLit = \case
+    VBool b -> pure b
+    other -> fail $ show other ++ " is not a bool"
+  toLit = VBool
