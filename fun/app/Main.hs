@@ -17,9 +17,15 @@ main = do
 
     (root, graph) = Graph.fromAst prog
 
+    prog' = Graph.toAst (root, graph)
+    prog'' = Graph.toAstWithSharing (root, graph)
+
   putStrLn $ Graph.dot graph
-  hPrint stderr (Graph.toAst (root, graph))
-  hPrint stderr (Graph.toAstWithSharing (root, graph))
+  hPrint stderr prog'
+  hPrint stderr prog''
+  run prog >>= hPrint stderr
+  run prog' >>= hPrint stderr
+  run prog'' >>= hPrint stderr
 
 int :: Int -> Expr
 int = ELit . VInt
