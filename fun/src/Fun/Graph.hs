@@ -11,7 +11,7 @@ module Fun.Graph where
 import Control.Lens (At (at), _1, _3, foldlOf', makeLenses, over, toListOf, traversed, use, (%=),
                      (.=), (<<+=))
 import Control.Monad.Reader (MonadReader (..), ReaderT (runReaderT), asks)
-import Control.Monad.State.Strict (MonadState (..), State, evalState, runState)
+import Control.Monad.State.Strict (MonadState (..), State, evalState, runState, modify, execState)
 import Data.HashMap.Strict (HashMap)
 import Data.HashSet (HashSet)
 import Data.Hashable (Hashable)
@@ -23,6 +23,7 @@ import qualified Data.List as List
 
 import Data.Foldable (for_)
 import Fun.Ast
+import Control.Monad (unless, (>=>))
 
 data GExpr
   = GLit !Lit
@@ -51,11 +52,13 @@ succRef :: Ref -> Ref
 succRef (Ref i) = Ref (i + 1)
 
 data Graph = Graph
-  { graphNext    :: !Ref,
-    graphIntern  :: !(HashMap GExpr Ref),
-    graphNodes   :: !(HashMap Ref GExpr),
-    graphParents :: !(HashMap Ref [Ref])
+  { graphNext       :: !Ref
+  , graphIntern     :: !(HashMap GExpr Ref)
+  , graphNodes      :: !(HashMap Ref GExpr)
+  , graphParents    :: !(HashMap Ref [Ref])
+  , graphEqualities :: !(HashMap Ref Ref)
   }
+  deriving (Eq)
 
 freeVars :: Graph -> [Var]
 freeVars g =
@@ -66,28 +69,60 @@ freeVars g =
 graphInsert :: GExpr -> Graph -> (Ref, Graph)
 graphInsert gexp g = case HashMap.lookup gexp (graphIntern g) of
   Nothing ->
-    ( graphNext g,
-      g
-        { graphNext = succRef (graphNext g),
-          graphIntern = HashMap.insert gexp (graphNext g) (graphIntern g),
-          graphNodes = HashMap.insert (graphNext g) gexp (graphNodes g),
-          graphParents =
+    let newRef = graphNext g in
+    ( graphNext g
+    , g
+        { graphNext = succRef newRef
+        , graphIntern = HashMap.insert gexp newRef (graphIntern g)
+        , graphNodes = HashMap.insert newRef gexp (graphNodes g)
+        , graphParents =
             foldlOf'
               refs
               (\parents child -> HashMap.insertWith (++) child [graphNext g] parents)
               (graphParents g)
               gexp
+        , graphEqualities = HashMap.insert newRef newRef (graphEqualities g)
         }
     )
   Just ref -> (ref, g)
 
+-- | Mark the two nodes as being equivalent
+graphEquality :: Ref -> Ref -> Graph -> Graph
+graphEquality l r = execState (l `union` r)
+  where
+    union ref1 ref2 = do
+      set1 <- state $ graphRepr ref1
+      set2 <- state $ graphRepr ref2
+
+      unless (set1 == set2) $ do
+        modify $ \g -> g { graphEqualities = HashMap.insert set1 set2 (graphEqualities g) }
+
+
+graphRepr :: Ref -> Graph -> (Ref, Graph)
+graphRepr node = runState (find node Nothing)
+  where
+    parentOf ref = do
+      graph <- get
+      case HashMap.lookup ref (graphEqualities graph) of
+        Nothing -> error $ "Invariant violated, no such ref " <> show ref
+        Just parent -> pure parent
+
+    find ref previous = do
+      parent <- parentOf ref
+      for_ previous $ \previous' ->
+        modify $ \g -> g { graphEqualities = HashMap.insert previous' parent (graphEqualities g) }
+      if parent == ref
+        then pure parent
+        else find parent (Just ref)
+
 graphEmpty :: Graph
 graphEmpty =
   Graph
-    { graphNext = Ref 0,
-      graphNodes = HashMap.empty,
-      graphIntern = HashMap.empty,
-      graphParents = HashMap.empty
+    { graphNext = Ref 0
+    , graphNodes = HashMap.empty
+    , graphIntern = HashMap.empty
+    , graphParents = HashMap.empty
+    , graphEqualities = HashMap.empty
     }
 
 data AstVar = AstVarLet Ref | AstVarArg
@@ -289,9 +324,155 @@ dot g = unlines $ header ++ nodes ++ footer
             GLam{}     -> "&#955;"
             GApp{}     -> "@"
           targets = toListOf refs gexpr
+          (repr, _) = graphRepr ref g
        in (mkNodeId ref ++ "[label=" ++ show label ++ "];") :
+          (mkNodeId ref ++ " -> " ++ mkNodeId repr ++ " [style=\"dotted\"]") :
             [ mkNodeId ref ++ " -> " ++ mkNodeId target
               | target <- targets
             ]
 
     mkNodeId (Ref ref) = "node_" ++ show ref
+
+
+dotClusters :: Graph -> String
+dotClusters g = unlines $ header ++ clusterLines ++ edgeLines ++ footer
+  where
+    header =
+        [ "digraph ast {"
+        , "  compound=true;"
+        ]
+    clusterLines = concatMap (map (indent 2) . mkCluster) $ HashMap.toList clusters
+    edgeLines = concatMap (map (indent 2) . mkEdges) $ HashMap.toList $ graphNodes g
+    footer = ["}"]
+
+    clusters = HashMap.fromListWith (++)
+      [ (repr, [(ref, gexpr)])
+      | (ref, gexpr) <- HashMap.toList $ graphNodes g
+      , let (repr, _) = graphRepr ref g
+      ]
+
+
+    indent i = (replicate i ' ' ++)
+
+    mkCluster (Ref reprId, nodes) =
+      let
+        clusterHeader = [ "subgraph cluster_" ++ show reprId ++ " {" ]
+        nodeLines = concatMap (map (indent 2) . mkNode) nodes
+        clusterFooter = ["}"]
+      in
+        clusterHeader ++ nodeLines ++ clusterFooter
+
+    mkNode (ref, gexpr) =
+      let label = case gexpr of
+            GLit i -> show i
+            GOp gop -> case gop of
+              OpPlus {}  -> "+"
+              OpMinus {} -> "-"
+              OpMult {}  -> "*"
+              OpDiv {}   -> "/"
+              OpLt {}    -> "<"
+              OpLeq {}   -> "<="
+              OpGt {}    -> ">"
+              OpGeq {}   -> ">="
+              OpEq {}    -> "=="
+              OpNeq {}   -> "!="
+              OpOr {}    -> "||"
+              OpAnd {}   -> "&&"
+            GFree v    -> show v
+            GArg index -> "arg " ++ show index
+            GLam{}     -> "&#955;"
+            GApp{}     -> "@"
+       in [mkNodeId ref ++ "[label=" ++ show label ++ "];"]
+
+    mkEdges (ref, gexpr) =
+      let targets = toListOf refs gexpr
+       in [ mkNodeId ref ++ " -> " ++ mkNodeId target ++ " [lhead=cluster_" ++ show targetRepr ++ "]"
+          | target <- targets
+          , let (Ref targetRepr, _) = graphRepr target g
+          ]
+
+    mkNodeId (Ref ref) = "node_" ++ show ref
+
+
+saturate :: Graph -> Graph
+saturate = fixpoint
+  where
+    fixpoint g =
+      let
+        g' = iter g
+      in
+        if g' == g
+          then g
+          else fixpoint g'
+
+    -- Perform just one iteration
+    iter g = List.foldl' rewrite g (HashMap.toList $ graphNodes g)
+
+    rewrite = commut >=> assocl >=> assocr >=> plusSelf >=> constantFold
+
+    -- As a first improvement, these rules need to be able to match on any member
+    -- of an equivalence set, not just the one the nodes originally pointed to
+
+    commut g (ref, gexpr) = case gexpr of
+      GOp (OpPlus l r) ->
+        let
+          (ref', g') = graphInsert (GOp (OpPlus r l)) g
+        in
+          graphEquality ref ref' g'
+      _ -> g
+
+
+    assocl g (ref, gexpr) = case gexpr of
+      GOp (OpPlus l r) -> case HashMap.lookup l (graphNodes g) of
+        Just (GOp (OpPlus ll lr)) ->
+          let
+            (ref', g') = graphInsert (GOp (OpPlus lr r)) g
+            (ref'', g'') = graphInsert (GOp (OpPlus ll ref')) g'
+          in
+            graphEquality ref ref'' g''
+        _ -> g
+      _ -> g
+
+    assocr g (ref, gexpr) = case gexpr of
+      GOp (OpPlus l r) -> case HashMap.lookup r (graphNodes g) of
+        Just (GOp (OpPlus rl rr)) ->
+          let
+            (ref', g') = graphInsert (GOp (OpPlus l rl)) g
+            (ref'', g'') = graphInsert (GOp (OpPlus ref' rr)) g'
+          in
+            graphEquality ref ref'' g''
+        _ -> g
+      _ -> g
+
+    plusSelf g (ref, gexpr) = case gexpr of
+      GOp (OpPlus l r)
+        | l == r ->
+          let
+            (lit2Ref, g') = graphInsert (GLit $ LInt 2) g
+            (ref', g'') = graphInsert (GOp (OpMult l lit2Ref)) g'
+          in
+            graphEquality ref ref' g''
+      _ -> g
+
+    constantFold g (ref, gexpr) = case gexpr of
+      GOp gop ->
+        let
+          asValue child = case HashMap.lookup child (graphNodes g) of
+            Just (GLit lit) -> Just $ case lit of
+              LInt i -> VInt i
+              LBool b -> VBool b
+            _ -> Nothing
+
+          insertResult lit =
+            let
+              (ref', g') = graphInsert (GLit lit) g
+            in
+              graphEquality ref' ref g'
+        in
+          case traverse asValue gop >>= evalOp of
+            Nothing -> g
+            Just v -> case v of
+              VInt i -> insertResult $ LInt i
+              VBool b -> insertResult $ LBool b
+              _ -> g
+      _ -> g

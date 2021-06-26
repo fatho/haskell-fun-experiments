@@ -31,14 +31,14 @@ main = do
           (plus (plus (var 0) (var 0)) (var 1))
           (plus (plus (var 0) (var 0)) (plus (int 1) (var 1)))
 
-    prog = prog2
+    prog = prog1
 
     (root, graph) = Graph.fromAst prog
 
     prog' = Graph.toAst (root, graph)
     prog'' = Graph.toAstWithSharing (root, graph)
 
-  putStrLn $ Graph.dot graph
+  putStrLn $ Graph.dotClusters $ Graph.saturate graph
   hPrint stderr prog'
   hPrint stderr prog''
   run prog >>= hPrint stderr
