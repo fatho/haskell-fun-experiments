@@ -1,13 +1,15 @@
 {-# LANGUAGE OverloadedLists #-}
 
+{-# OPTIONS_GHC -Wno-name-shadowing #-}
 module Fun2.GraphSpec where
 
-import Test.Hspec (Spec, it, describe, shouldBe, shouldNotBe)
-import Data.Hashable (Hashable(hash))
+import Control.Monad.State.Strict (State, runState, state, modify)
+import Data.Hashable (Hashable (hash))
+import Test.Hspec (Spec, describe, it, shouldBe, shouldNotBe)
 
 import qualified Data.Vector.Primitive as VP
 
-import Fun2.Graph (Graph, Ref (..), Node (..))
+import Fun2.Graph (Graph, Node (..), Ref (..))
 import qualified Fun2.Graph as Graph
 
 spec :: Spec
@@ -41,3 +43,34 @@ spec = do
       g3 `shouldBe` g5
       ref5 `shouldNotBe` ref6
       g5 `shouldNotBe` g6
+
+    it "finds singleton sets" $ do
+      let
+        ((ref1, ref2, ref3), g) = buildGraph $ do
+          ref1 <- state $ Graph.insert (Node "0" [])
+          ref2 <- state $ Graph.insert (Node "1" [])
+          ref3 <- state $ Graph.insert (Node "+" [ref1, ref2])
+          pure (ref1, ref2, ref3)
+
+      Graph.find ref1 g `shouldBe` ref1
+      Graph.find ref2 g `shouldBe` ref2
+      Graph.find ref3 g `shouldBe` ref3
+
+    it "unions" $ do
+      let
+        ((ref1, ref2, ref3), g) = buildGraph $ do
+          ref1 <- state $ Graph.insert (Node "0" [])
+          ref2 <- state $ Graph.insert (Node "1" [])
+          ref3 <- state $ Graph.insert (Node "+" [ref1, ref2])
+          ref4 <- state $ Graph.insert (Node "+" [ref1, ref3])
+          -- 1 + 0 == 0, so we can union the two
+          modify $ Graph.union ref2 ref3
+          pure (ref1, ref2, ref3)
+
+      Graph.find ref1 g `shouldBe` ref1
+      Graph.find ref2 g `shouldBe` Graph.find ref3 g
+      Graph.find ref3 g `shouldBe` Graph.find ref2 g
+
+
+buildGraph :: State (Graph n) a -> (a, Graph n)
+buildGraph = flip runState Graph.empty
