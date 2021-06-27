@@ -29,6 +29,7 @@ dependencies:
 - mtl
 - network
 - optparse-applicative
+- primitive
 - QuickCheck
 - text
 - transformers
