@@ -2,11 +2,10 @@
 
 module Main where
 
-import Control.Monad.State.Strict (State, execState, runState, state, modify, gets)
+import Control.Monad.State.Strict (runState, state, modify, gets)
 import System.IO (hPrint, stderr)
 
-
-import Fun2.Graph (Graph, Node (..), Ref (..))
+import Fun2.Graph (Node (..), Ref (..))
 import qualified Fun2.Graph as Graph
 import qualified Fun2.Dot as Dot
 
@@ -18,11 +17,14 @@ main = do
       ref2 <- state $ Graph.insert (Node "1" [])
       ref3 <- state $ Graph.insert (Node "+" [ref1, ref2])
       ref4 <- state $ Graph.insert (Node "+" [ref1, ref3])
+      ref5 <- state $ Graph.insert (Node "+" [ref1, ref4])
+      ref6 <- state $ Graph.insert (Node "+" [ref1, ref5])
+      ref7 <- state $ Graph.insert (Node "+" [ref1, ref6])
       -- -- 1 + 0 == 0, so we can union the two
       modify $ Graph.union ref2 ref3
 
       let
-        refs = [ref1, ref2, ref3, ref4] :: [Ref]
+        refs = [ref1, ref2, ref3, ref4, ref5, ref6, ref7] :: [Ref]
       (,) refs <$> traverse (gets . Graph.find) refs
 
   hPrint stderr info

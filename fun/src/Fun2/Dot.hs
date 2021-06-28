@@ -16,15 +16,16 @@ dot g = unlines $ header ++ clusterLines ++ edgeLines ++ footer
         , "  compound=true;"
         ]
     clusterLines = concatMap (map (indent 2) . mkCluster) $ HashMap.toList clusters
-    edgeLines = concatMap (map (indent 2) . mkEdges) $ HashMap.toList $ view nodes g
+    edgeLines = concatMap (map (indent 2) . mkEdges) allNodes
     footer = ["}"]
 
     clusters = HashMap.fromListWith (++)
       [ (repr, [(ref, nodeData)])
-      | (ref, nodeData) <- HashMap.toList $ view nodes g
+      | (ref, nodeData) <- allNodes
       , let repr = find ref g
       ]
 
+    allNodes = HashMap.toList $ view nodes g
 
     indent i = (replicate i ' ' ++)
 

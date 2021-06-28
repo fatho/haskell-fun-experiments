@@ -12,9 +12,9 @@
 
 module Fun2.Graph where
 
-import Control.Lens (Ixed (ix), makeLenses, uses, view, (%=), (+=), (.=), (<<%=), use, (<<.=), at)
-import Control.Monad (when)
-import Control.Monad.State.Strict (evalState, execState, gets, runState, state)
+import Control.Lens (Ixed (ix), makeLenses, uses, view, (%=), (+=), (.=), (<<%=), use, (<<.=), at, views, forOf_, traversed, to, itraversed, asIndex)
+import Control.Monad (when, unless)
+import Control.Monad.State.Strict (evalState, execState, gets, runState)
 import Data.Foldable (for_)
 import Data.HashMap.Strict (HashMap)
 import Data.HashSet (HashSet)
@@ -28,24 +28,25 @@ import qualified Data.Primitive as P
 import qualified Data.Vector.Primitive as VP
 
 
-import Debug.Trace
-
+-- | Invariant: nodes always point to set-representants
 data Graph n = Graph
-  { _freshRef :: !Ref
-   -- TODO: invariant: make sure children always point to set representants
-   -- when unioning two sets, replace all existing nodes using them
-  , _interner :: !(HashMap (Node n) Ref)
-  , _nodes    :: !(HashMap Ref (NodeData n))
+  { _freshRef  :: !Ref
+
+  , _interner  :: !(HashMap (Node n) Ref)
+  , _nodes     :: !(HashMap Ref (NodeData n))
+  , _unionFind :: !(HashMap Ref UnionFindRec)
   }
   deriving (Show, Eq)
 
 data NodeData n = NodeData
-  { _nodeSelf :: Node n
+  { _nodeSelf :: !(Node n)
   , _nodeParents :: !(HashSet Ref)
+  }
+  deriving (Show, Eq)
 
-  -- Union-Find stuff
-  , _nodeClassParent :: Ref
-  , _nodeClassRank   :: Rank
+data UnionFindRec = UnionFindRec
+  { _setParent :: !Ref
+  , _setRank :: !Rank
   }
   deriving (Show, Eq)
 
@@ -81,24 +82,17 @@ hashPrimVectorWithSalt salt (VP.Vector offset len (P.ByteArray arr#)) =
   in
     Hashable.hashByteArrayWithSalt arr# byteOff byteLen salt
 
-mkNodeData :: Ref -> Node n -> NodeData n
-mkNodeData ref node = NodeData
-  { _nodeSelf = node
-  , _nodeParents = mempty
-  -- Add a new union-find set
-  , _nodeClassParent = ref
-  , _nodeClassRank = 0
-  }
-
 
 makeLenses ''Graph
 makeLenses ''NodeData
+makeLenses ''UnionFindRec
 
 empty :: Graph n
 empty = Graph
   { _freshRef = Ref 0
   , _interner = HashMap.empty
   , _nodes = HashMap.empty
+  , _unionFind = HashMap.empty
   }
 
 insert :: (Eq n, Hashable n) => Node n -> Graph n -> (Ref, Graph n)
@@ -109,7 +103,8 @@ insert (Node ty children) = runState $ do
     Nothing -> do
       ref <- freshRef <<%= succRef
       interner %= HashMap.insert node ref
-      nodes %= HashMap.insert ref (mkNodeData ref node)
+      nodes %= HashMap.insert ref (NodeData node mempty)
+      unionFind %= HashMap.insert ref (UnionFindRec ref 0)
       -- Add back-edges from children to parent
       VP.forM_ children' $ \child ->
         nodes . ix child . nodeParents %= HashSet.insert ref
@@ -121,13 +116,13 @@ findWithRank :: Ref -> Graph n -> (Ref, Rank)
 findWithRank start = evalState (go start)
   where
     go ref = do
-      nodes `uses` HashMap.lookup ref >>= \case
+      unionFind `uses` HashMap.lookup ref >>= \case
         Nothing -> error $ "Node not part of this graph " ++ show ref
-        Just nodeData
-          | parent == ref -> pure (ref, view nodeClassRank nodeData)
+        Just uf
+          | parent == ref -> pure (ref, view setRank uf)
           | otherwise -> go parent
           where
-            parent = view nodeClassParent nodeData
+            parent = view setParent uf
 
 find :: Ref -> Graph n -> Ref
 find start = fst . findWithRank start
@@ -137,35 +132,37 @@ union ref1 ref2 = execState $ do
   (class1, rank1) <- gets (findWithRank ref1)
   (class2, rank2) <- gets (findWithRank ref2)
 
-  if rank1 < rank2
-    then do
-      -- make class2 parent of class1
-      nodes . ix class1 . nodeClassParent .= class2
-      fixupNodes class1 class2
-    else do
-      -- otherwise, put class2 into class1
-      nodes . ix class2 . nodeClassParent .= class1
-      fixupNodes class2 class1
+  unless (class1 == class2) $ do
+    if rank1 < rank2
+      then do
+        -- make class2 parent of class1
+        unionFind . ix class1 . setParent .= class2
+        redirectNodes class1 class2
+      else do
+        -- otherwise, put class2 into class1
+        unionFind . ix class2 . setParent .= class1
+        when (rank1 == rank2) $ do
+          unionFind . ix class1 . setRank += 1
 
-      when (rank1 == rank2) $ do
-        nodes . ix class1 . nodeClassRank += 1
+        redirectNodes class2 class1
+
 
   where
-    -- fixup existing nodes
-    fixupNodes from to = do
-      --traceShowM ("fixupNodes", from, to)
+    -- Fixup existing nodes pointing to the newly merged classes
+    redirectNodes fromChild toChild = do
+      --traceShowM ("fixupNodes", fromChild, toChild)
       -- Get the nodes pointing to the "disappearing" node and unset parent pointers
-      parents <- nodes . ix from . nodeParents <<.= mempty
+      parents <- nodes . ix fromChild . nodeParents <<.= mempty
       -- Rewrite each parent
-      for_ parents $ \parent -> redirectChildren parent from to
+      for_ parents $ \parent -> redirectChildren parent fromChild toChild
 
-    redirectChildren parent from to = do
+    redirectChildren parent fromChild toChild = do
       use (nodes . at parent) >>= \case
         Nothing -> error $ "Invariant violated: missing parent node " ++ show parent
         Just parentData -> do
           let
             oldNode@(Node ty oldChildren) = view nodeSelf parentData
-            newChildren = VP.map (\child -> if child == from then to else child) oldChildren
+            newChildren = VP.map (\child -> if child == fromChild then toChild else child) oldChildren
             newNode = Node ty newChildren
 
           use (interner . at newNode) >>= \case
@@ -174,9 +171,18 @@ union ref1 ref2 = execState $ do
             Nothing -> do
               interner . at oldNode .= Nothing
               interner . at newNode .= Just parent
+              nodes . ix parent . nodeSelf .= newNode
+              -- Add back-edges from children to parent
+              VP.forM_ newChildren $ \child ->
+                nodes . ix child . nodeParents %= HashSet.insert parent
+
             -- The rewritten node already exists under a different ref,
-            -- we need to merge the two now
+            -- we need to merge the two now and forget
             Just existingRef -> do
+              -- TODO: we could forget it in the interner
+              -- interner . at oldNode .= Nothing
+              nodes . ix parent . nodeSelf .= newNode
+              id %= union parent existingRef
               interner . at oldNode .= Nothing
               nodes . at parent .= Nothing
               fixupNodes parent existingRef
