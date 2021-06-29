@@ -17,8 +17,9 @@ module Fun2.Graph
   , empty
   , insert
   , classOf
+  , classNodes
   , equalize
-  , nodeClasses
+  , classes
   , dot
   ) where
 
@@ -39,32 +40,52 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Vector.Primitive as VP
 
 import Fun2.UnionFind (UnionFind)
-import Fun2.Util (hashPrimVectorWithSalt)
 import qualified Fun2.UnionFind as UF
+import Fun2.Util (hashPrimVectorWithSalt)
 
--- | Invariant: nodes always point to set-representants
+-- | A term graph supporting equivalence relations.
 data Graph n = Graph
-  { _freshRef  :: !Ref
+  { _graphFreshRef  :: !Ref
+    -- ^ Used for generating fresh node IDs when new nodes are inserted
 
-  , _interner  :: !(HashMap (Node n) Ref)
-  , _nodes     :: !(HashMap Ref (NodeData n))
-  , _unionFind :: !(UnionFind Ref)
-  , _classes   :: !(HashMap Ref ClassData)
+  , _graphInterner  :: !(HashMap (Node n) Ref)
+    -- ^ Used for hash-consing incoming nodes
+    -- Invariant: all refs on the RHS of the map exist in '_graphNodes'
+
+  , _graphNodes     :: !(HashMap Ref (NodeData n))
+    -- ^ Nodes in the graph together with some metadata
+
+  , _graphUnionFind :: !(UnionFind Ref)
+    -- ^ Union-find structure for recording the equivalence relation
+
+  , _graphClasses   :: !(HashMap Ref ClassData)
+    -- ^ Meta-data about the equivalence classes
+    -- Invariant: the keys in this map are exactly the class representatives
   }
   deriving (Show, Eq)
 
+-- | Information stored about a single node.
 data NodeData n = NodeData
-  { _nodeSelf    :: !(Node n)
-  , _nodeParents :: !(HashSet Ref)
+  { _nodeDataSelf    :: !(Node n)
+    -- ^ The actual node
+  , _nodeDataParents :: !(HashSet Ref)
+    -- ^ The set of nodes pointing to this node
   }
   deriving (Show, Eq)
 
+-- | Information about an equivalence class.
+--
+-- Forms a commutative monoid. This is important because class info needs to be merged when classes
+-- are equalized, and equalization can happen in any order.
 data ClassData = ClassData
-  { _classNodes   :: !(HashSet Ref)
-  , _classParents :: !(HashSet Ref)
+  { _classDataNodes   :: !(HashSet Ref)
+    -- ^ The nodes that are part of this class.
+  , _classDataParents :: !(HashSet Ref)
+    -- ^ The set of all nodes that have children in this class.
   }
   deriving (Show, Eq)
 
+-- | A node, characterized by its type @n@ and an ordered list of children.
 data Node n = Node !n !(VP.Vector Ref)
   deriving stock (Show, Eq, Generic)
 
@@ -73,16 +94,8 @@ instance Hashable n => Hashable (Node n) where
     (salt `Hashable.hashWithSalt` ty) `hashPrimVectorWithSalt` children
 
 newtype Ref = Ref Int
-  deriving stock (Show, Eq, Ord, Generic)
+  deriving stock (Show, Eq, Ord)
   deriving newtype (Hashable, VP.Prim) -- deriving Prim requires UnboxedTuples and TypeInType
-
-newtype Class = Class Int
-  deriving stock (Show, Eq, Generic)
-  deriving newtype (Hashable, VP.Prim) -- deriving Prim requires UnboxedTuples and TypeInType
-
-newtype Rank = Rank Int
-  deriving stock (Show, Eq, Ord, Generic)
-  deriving newtype (Bounded, Enum, Num, Hashable)
 
 succRef :: Ref -> Ref
 succRef (Ref n) = Ref (n + 1)
@@ -93,64 +106,76 @@ makeLenses ''ClassData
 
 instance Semigroup ClassData where
   cd1 <> cd2 = ClassData
-    { _classNodes = _classNodes cd1 <> _classNodes cd2
-    , _classParents = _classParents cd1 <> _classParents cd2
+    { _classDataNodes = _classDataNodes cd1 <> _classDataNodes cd2
+    , _classDataParents = _classDataParents cd1 <> _classDataParents cd2
     }
 
 instance Monoid ClassData where
   mempty = ClassData mempty mempty
 
+-- | An empty graph.
 empty :: Graph n
 empty = Graph
-  { _freshRef = Ref 0
-  , _interner = HashMap.empty
-  , _nodes = HashMap.empty
-  , _unionFind = UF.empty
-  , _classes = HashMap.empty
+  { _graphFreshRef = Ref 0
+  , _graphInterner = HashMap.empty
+  , _graphNodes = HashMap.empty
+  , _graphUnionFind = UF.empty
+  , _graphClasses = HashMap.empty
   }
 
+-- | Insert a new node into the graph and return its id and the modified graph.
 insert :: (Eq n, Hashable n) => Node n -> Graph n -> (Ref, Graph n)
-insert (Node ty children) = runState $ do
-  classChildren <- gets $ \g -> VP.map (`classOf` g) children
-  let node = Node ty classChildren
-  interner `uses` HashMap.lookup node >>= \case
+insert node@(Node _ children) = runState $ do
+  graphInterner `uses` HashMap.lookup node >>= \case
     Nothing -> do
-      ref <- freshRef <<%= succRef
-      interner %= HashMap.insert node ref
-      nodes %= HashMap.insert ref (NodeData node mempty)
-      unionFind %= UF.insert ref
-      classes %= HashMap.insert ref (ClassData (HashSet.singleton ref) mempty)
+      ref <- graphFreshRef <<%= succRef
+      graphInterner %= HashMap.insert node ref
+      graphNodes %= HashMap.insert ref (NodeData node mempty)
+      graphUnionFind %= UF.insert ref
+      graphClasses %= HashMap.insert ref (ClassData (HashSet.singleton ref) mempty)
       -- Add back-edges from children to parent
-      VP.forM_ classChildren $ \child -> do
-        nodes . ix child . nodeParents %= HashSet.insert ref
-        classes . ix child . classParents %= HashSet.insert ref
+      VP.forM_ children $ \child -> do
+        graphNodes . ix child . nodeDataParents %= HashSet.insert ref
+        childClass <- gets $ classOf child
+        graphClasses . ix childClass . classDataParents %= HashSet.insert ref
       pure ref
     Just ref -> pure ref
 
-
+-- | Get the class-representing node of an arbitrary node in the graph.
 classOf :: Ref -> Graph n -> Ref
-classOf start = UF.find start . _unionFind
+classOf ref = UF.find ref . _graphUnionFind
 
-nodeClasses :: Graph n -> [[(Ref, Node n)]]
-nodeClasses g
+-- | Return the nodes that are part of the same equivalence class as the given node.
+classNodes :: Ref -> Graph n -> HashSet Ref
+classNodes ref g = view (graphClasses . ix rep . classDataNodes) g
+  where
+    rep = classOf ref g
+
+-- | Return a list of all classes with all their respective nodes.
+classes :: Graph n -> [[(Ref, Node n)]]
+classes g
   = map (sortBy (comparing fst) . snd)
   $ Map.toList nodesByClass
   where
     nodesByClass = Map.fromListWith (++)
-      [ (classRef, [(ref, view nodeSelf nd)])
-      | (ref, nd) <- HashMap.toList $ _nodes g
+      [ (classRef, [(ref, view nodeDataSelf nd)])
+      | (ref, nd) <- HashMap.toList $ view graphNodes g
       , let classRef = classOf ref g
       ]
 
+-- | @equalize a b g@ records the fact that @a@ is equivalent to @b@ by merging their corresponding
+-- equivalence classes in @g@.
 equalize :: (Eq n, Hashable n) => Ref -> Ref -> Graph n -> Graph n
 equalize ref1 ref2 = execState $
-  zoom unionFind (state $ UF.union ref1 ref2) >>= \case
+  zoom graphUnionFind (state $ UF.union ref1 ref2) >>= \case
     -- Already equal
     Nothing -> pure ()
     Just unioned -> do
-      -- Update internal data structures
-      absorbedData <- classes . at (UF.unionAbsorbed unioned) <<.= Nothing
-      for_ absorbedData $ \cd -> classes . ix (UF.unionInto unioned) <>= cd
+      -- Update class info
+      graphClasses . at (UF.unionAbsorbed unioned) <<.= Nothing >>= \case
+        Nothing           -> error "invariant violated: class representant has no ClassData"
+        Just absorbedData -> graphClasses . ix (UF.unionInto unioned) <>= absorbedData
+      -- Exploit congruence (@x ≡ y@ implies @f x ≡ f y@) to merge parents
       propagateUnions $ UF.unionInto unioned
   where
     -- Unioning two nodes could mean that two disjoint nodes referencing them now become equal
@@ -158,14 +183,14 @@ equalize ref1 ref2 = execState $
     -- If it now turns out that @y@ ≡ @1@, then we also have @x + y@ ≡ @x + 1@ by substitution.
     propagateUnions newClassRep = do
       -- Obtain all nodes pointing to our newly formed class
-      parents <- uses (classes . ix newClassRep . classParents) HashSet.toList
+      parents <- uses (graphClasses . ix newClassRep . classDataParents) HashSet.toList
       -- Compute which parents now become equivalent due to their children being merged
       let
         computeParentUnions _ [] acc = pure acc
-        computeParentUnions seen (parentRef:rest) acc = use (nodes . at parentRef) >>= \case
+        computeParentUnions seen (parentRef:rest) acc = use (graphNodes . at parentRef) >>= \case
             Nothing -> error $ "Invariant violated: missing node " ++ show parentRef
             Just nd -> do
-              let Node ty children = view nodeSelf nd
+              let Node ty children = view nodeDataSelf nd
               classChildren <- gets $ \g -> VP.map (`classOf` g) children
               let normalNode = Node ty classChildren
               case HashMap.lookup normalNode seen of
@@ -195,7 +220,7 @@ dot g = unlines $ header ++ clusterLines ++ edgeLines ++ footer
       , let repr = classOf ref g
       ]
 
-    allNodes = HashMap.toList $ view nodes g
+    allNodes = HashMap.toList $ view graphNodes g
 
     indent i = (replicate i ' ' ++)
 
@@ -208,11 +233,11 @@ dot g = unlines $ header ++ clusterLines ++ edgeLines ++ footer
         clusterHeader ++ nodeLines ++ clusterFooter
 
     mkNode (ref, nodeData) =
-      let Node label _ = view nodeSelf nodeData
+      let Node label _ = view nodeDataSelf nodeData
        in [mkNodeId ref ++ "[label=" ++ show label ++ "];"]
 
     mkEdges (ref, nodeData) =
-      let Node _ children = view nodeSelf nodeData
+      let Node _ children = view nodeDataSelf nodeData
        in [ edgeLine
           | (index, target) <- zip [0 :: Int ..] $ VP.toList children
           , edgeLine <- mkEdge index ref target

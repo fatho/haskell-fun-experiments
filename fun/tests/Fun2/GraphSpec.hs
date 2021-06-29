@@ -52,7 +52,7 @@ spec = do
           pure (ref0, ref1, ref2, ref3)
 
       Graph.classOf ref0 g `shouldBe` ref0
-      Graph.nodeClasses g `shouldBe`
+      Graph.classes g `shouldBe`
         [ [ (ref0,Node "0" []) ]
         , [ (ref1,Node "1" [])
           , (ref2,Node "+" [ref0, ref1])
