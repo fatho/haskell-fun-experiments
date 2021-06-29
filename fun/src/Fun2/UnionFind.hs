@@ -5,11 +5,14 @@ module Fun2.UnionFind
   , insert
   , find
   , union
+  , union'
   , Union (..)
   , sets
+  , dot
   )
   where
 
+import Control.Monad.State (state, evalState)
 import Data.HashMap.Strict (HashMap)
 import Data.Hashable (Hashable)
 
@@ -81,9 +84,15 @@ data Union k = Union
     -- ^ The set representant that the other set was merged into
   }
 
+
 -- | Merge the two sets represented by the given keys
-union :: (Eq k, Hashable k) => k -> k -> UnionFind k -> (Maybe (Union k), UnionFind k)
-union key1 key2 uf@(UnionFind hm)
+union :: (Eq k, Hashable k) => k -> k -> UnionFind k -> UnionFind k
+union key1 key2 = snd . union' key1 key2
+
+-- | Merge the two sets represented by the given keys and return which of the two becomes the new
+-- set representant.
+union' :: (Eq k, Hashable k) => k -> k -> UnionFind k -> (Maybe (Union k), UnionFind k)
+union' key1 key2 uf@(UnionFind hm)
   -- The two keys already refer to the same set
   | setParent set1 == setParent set2 = (Nothing, uf)
   | setRank set1 < setRank set2 = merge set1 set2
@@ -112,3 +121,40 @@ sets uf@(UnionFind hm)
     | el <- HashMap.keys hm
     , let rep = find el uf
     ]
+
+-- | Generate a GraphViz DOT representation of the internal union-find structure.
+dot :: (Show k, Eq k, Hashable k) => UnionFind k -> String
+dot (UnionFind hm) = unlines $ header ++ clusterLines ++ footer
+  where
+    nodeIds = evalState (traverse (const $ state $ \id_ -> (id_, id_ + 1)) hm) (0 :: Int)
+
+    header =
+        [ "digraph ast {"
+        , "  compound=true;"
+        ]
+    clusterLines = concatMap (map (indent 2) . mkCluster) $ HashMap.toList clusters
+    footer = ["}"]
+
+    clusters = HashMap.fromListWith (++)
+      [ (repr, [(ref, nodeData)])
+      | (ref, nodeData) <- HashMap.toList hm
+      , let repr = find ref (UnionFind hm)
+      ]
+
+    indent i = (replicate i ' ' ++)
+
+    mkCluster (reprId, clusterNodes) =
+      let
+        clusterHeader = [ "subgraph cluster_" ++ mkNodeId reprId ++ " {" ]
+        nodeLines = concatMap (map (indent 2) . mkNode) clusterNodes
+        clusterFooter = ["}"]
+      in
+        clusterHeader ++ nodeLines ++ clusterFooter
+
+    mkNode (key, setData) =
+      let
+        label = show key
+      in [ mkNodeId key ++ "[label=" ++ show label ++ "];"
+         , mkNodeId key ++ " -> " ++ mkNodeId (setParent setData) ]
+
+    mkNodeId key = "node_" ++ show (nodeIds HashMap.! key)

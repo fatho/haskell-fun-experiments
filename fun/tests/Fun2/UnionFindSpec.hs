@@ -39,8 +39,8 @@ spec = do
     it "unions" $ do
       let
         uf0 = foldr UF.insert (UF.empty @Int) [0..9]
-        uf1 = foldr (\(a, b) -> snd . UF.union a b) uf0 [(1, 3), (3, 5), (7, 9), (5, 7)]
-        uf2 = foldr (\(a, b) -> snd . UF.union a b) uf1 [(0, 8), (2, 6), (4, 2), (8, 6)]
+        uf1 = foldl (flip $ uncurry UF.union) uf0 [(1, 3), (3, 5), (7, 9), (5, 7)]
+        uf2 = foldl (flip $ uncurry UF.union) uf1 [(0, 8), (2, 6), (4, 2), (8, 6)]
 
       sort² (UF.sets uf2) `shouldBe` [[0,2,4,6,8],[1,3,5,7,9]]
 
@@ -49,18 +49,18 @@ spec = do
         UF.find (item :: Int) (UF.insert item UF.empty) == item
 
       prop "find X (union X Y ...) == find Y (union X Y ...)" $ \x y ->
-        let uf = snd $ UF.union x y $ UF.insert x $ UF.insert y UF.empty
+        let uf = UF.union x y $ UF.insert x $ UF.insert y UF.empty
         in UF.find (x :: Int) uf == UF.find y uf
 
       prop "union commutative" $
         \(Mod.NonEmpty items) -> forAll (pairsOf @Int items) $ \unions -> forAll (pairOf items) $ \(x, y) ->
           let uf = unionFindOf items unions
-          in snd (UF.union x y uf) == snd (UF.union y x uf)
+          in UF.union x y uf == UF.union y x uf
 
       prop "union idempotent" $
         \(Mod.NonEmpty items) -> forAll (pairsOf @Int items) $ \unions -> forAll (pairOf items) $ \(x, y) ->
-          let uf = snd $ UF.union x y $ unionFindOf items unions
-          in snd (UF.union x y uf) == uf
+          let uf = UF.union x y $ unionFindOf items unions
+          in UF.union x y uf == uf
 
       prop "insert idempotent" $
         \(Mod.NonEmpty items) -> forAll (pairsOf @Int items) $ \unions -> forAll (Gen.elements items) $ \item ->
@@ -74,7 +74,7 @@ pairsOf items = Gen.sublistOf $ (,) <$> items <*> items
 unionFindOf :: (Eq k, Hashable k) => [k] -> [(k, k)] -> UF.UnionFind k
 unionFindOf items unions =
   let uf0 = foldr UF.insert UF.empty items
-  in foldr (\(a, b) -> snd . UF.union a b) uf0 unions
+  in foldr (uncurry UF.union) uf0 unions
 
 pairOf :: [k] -> Gen (k, k)
 pairOf items = (,) <$> Gen.elements items <*> Gen.elements items
@@ -84,7 +84,7 @@ genUnionFind = do
   items <- Gen.listOf arbitrary
   let uf0 = foldr UF.insert UF.empty items
   unions <- Gen.sublistOf $ (,) <$> items <*> items
-  pure $ foldr (\(a, b) -> snd . UF.union a b) uf0 unions
+  pure $ foldr (uncurry UF.union) uf0 unions
 
 sort² :: Ord k => [[k]] -> [[k]]
 sort² = sort . map sort

@@ -124,6 +124,9 @@ empty = Graph
   }
 
 -- | Insert a new node into the graph and return its id and the modified graph.
+--
+-- TODO: ensure that new nodes are inserted into the correct equivalence class if an equivalent node
+-- already exists (by congruence, as exactly identical nodes are already interned).
 insert :: (Eq n, Hashable n) => Node n -> Graph n -> (Ref, Graph n)
 insert node@(Node _ children) = runState $ do
   graphInterner `uses` HashMap.lookup node >>= \case
@@ -167,7 +170,7 @@ classes g
 -- equivalence classes in @g@.
 equalize :: (Eq n, Hashable n) => Ref -> Ref -> Graph n -> Graph n
 equalize ref1 ref2 = execState $
-  zoom graphUnionFind (state $ UF.union ref1 ref2) >>= \case
+  zoom graphUnionFind (state $ UF.union' ref1 ref2) >>= \case
     -- Already equal
     Nothing -> pure ()
     Just unioned -> do
