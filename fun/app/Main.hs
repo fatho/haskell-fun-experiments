@@ -17,14 +17,18 @@ main = do
       ref2 <- state $ Graph.insert (Node "1" [])
       ref3 <- state $ Graph.insert (Node "+" [ref1, ref2])
       ref4 <- state $ Graph.insert (Node "+" [ref1, ref3])
-      ref5 <- state $ Graph.insert (Node "+" [ref1, ref4])
-      ref6 <- state $ Graph.insert (Node "+" [ref1, ref5])
-      ref7 <- state $ Graph.insert (Node "+" [ref1, ref6])
-      -- -- 1 + 0 == 0, so we can union the two
+      ref5 <- state $ Graph.insert (Node "2" [])
+      ref6 <- state $ Graph.insert (Node "*" [ref3, ref5])
+      ref7 <- state $ Graph.insert (Node "*" [ref2, ref5])
+      ref8 <- state $ Graph.insert (Node "*" [ref1, ref6])
+      ref9 <- state $ Graph.insert (Node "*" [ref1, ref7])
+      -- 1 + 0 == 0, so we can union the two
       modify $ Graph.union ref2 ref3
+      -- -- 1 * 2 == 0, so we can union again
+      -- modify $ Graph.union ref5 ref6
 
       let
-        refs = [ref1, ref2, ref3, ref4, ref5, ref6, ref7] :: [Ref]
+        refs = [ref1, ref2, ref3, ref4, ref5, ref6, ref7, ref8, ref9] :: [Ref]
       (,) refs <$> traverse (gets . Graph.find) refs
 
   hPrint stderr info

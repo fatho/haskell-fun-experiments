@@ -58,18 +58,22 @@ spec = do
 
     it "unions" $ do
       let
-        ((ref1, ref2, ref3), g) = buildGraph $ do
-          ref1 <- state $ Graph.insert (Node "0" [])
-          ref2 <- state $ Graph.insert (Node "1" [])
-          ref3 <- state $ Graph.insert (Node "+" [ref1, ref2])
-          ref4 <- state $ Graph.insert (Node "+" [ref1, ref3])
+        (ref0, g) = buildGraph $ do
+          ref0 <- state $ Graph.insert (Node "0" [])
+          ref1 <- state $ Graph.insert (Node "1" [])
+          ref2 <- state $ Graph.insert (Node "+" [ref0, ref1])
+          _ <- state $ Graph.insert (Node "+" [ref0, ref2])
           -- 1 + 0 == 0, so we can union the two
-          modify $ Graph.union ref2 ref3
-          pure (ref1, ref2, ref3)
+          modify $ Graph.union ref1 ref2
+          pure ref0
 
-      Graph.find ref1 g `shouldBe` ref1
-      Graph.find ref2 g `shouldBe` Graph.find ref3 g
-      Graph.find ref3 g `shouldBe` Graph.find ref2 g
+      Graph.find ref0 g `shouldBe` ref0
+      Graph.nodeClasses g `shouldBe`
+        [ [ (Ref 0,Node "0" []) ]
+        , [ (Ref 1,Node "1" [])
+          , (Ref 2,Node "+" [Ref 0,Ref 1])
+          , (Ref 3,Node "+" [Ref 0,Ref 2]) ]
+        ]
 
 
 buildGraph :: State (Graph n) a -> (a, Graph n)
