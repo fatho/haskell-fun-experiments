@@ -5,9 +5,8 @@ module Main where
 import Control.Monad.State.Strict (runState, state, modify, gets)
 import System.IO (hPrint, stderr)
 
-import Fun2.Graph (Node (..), Ref (..))
+import Fun2.Graph (Node (..), Ref)
 import qualified Fun2.Graph as Graph
-import qualified Fun2.Dot as Dot
 
 main :: IO ()
 main = do
@@ -22,17 +21,17 @@ main = do
       ref7 <- state $ Graph.insert (Node "*" [ref2, ref5])
       ref8 <- state $ Graph.insert (Node "*" [ref1, ref6])
       ref9 <- state $ Graph.insert (Node "*" [ref1, ref7])
-      -- 1 + 0 == 0, so we can union the two
-      modify $ Graph.union ref2 ref3
-      -- -- 1 * 2 == 0, so we can union again
-      -- modify $ Graph.union ref5 ref6
+      -- 1 + 0 == 0, so we can set the two equal
+      modify $ Graph.equalize ref2 ref3
+      -- -- 1 * 2 == 0, so we can equalize again
+      -- modify $ Graph.equalize ref5 ref6
 
       let
         refs = [ref1, ref2, ref3, ref4, ref5, ref6, ref7, ref8, ref9] :: [Ref]
       (,) refs <$> traverse (gets . Graph.classOf) refs
 
   hPrint stderr info
-  putStrLn $ Dot.dot g
+  putStrLn $ Graph.dot g
 
 
 -- import Fun.Ast

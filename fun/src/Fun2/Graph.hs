@@ -10,7 +10,17 @@
 {-# LANGUAGE TypeInType #-}
 {-# LANGUAGE UnboxedTuples #-}
 
-module Fun2.Graph where
+module Fun2.Graph
+  ( Graph
+  , Ref
+  , Node (..)
+  , empty
+  , insert
+  , classOf
+  , equalize
+  , nodeClasses
+  , dot
+  ) where
 
 import Control.Lens (Ixed (ix), at, makeLenses, use, uses, view, zoom, (%=), (<<%=), (<<.=), (<>=))
 import Control.Monad.State.Strict (execState, gets, runState, state)
@@ -26,10 +36,10 @@ import qualified Data.HashMap.Strict as HashMap
 import qualified Data.HashSet as HashSet
 import qualified Data.Hashable as Hashable
 import qualified Data.Map.Strict as Map
-import qualified Data.Primitive as P
 import qualified Data.Vector.Primitive as VP
 
 import Fun2.UnionFind (UnionFind)
+import Fun2.Util (hashPrimVectorWithSalt)
 import qualified Fun2.UnionFind as UF
 
 -- | Invariant: nodes always point to set-representants
@@ -76,16 +86,6 @@ newtype Rank = Rank Int
 
 succRef :: Ref -> Ref
 succRef (Ref n) = Ref (n + 1)
-
-hashPrimVectorWithSalt :: forall a. VP.Prim a => Int -> VP.Vector a -> Int
-hashPrimVectorWithSalt salt (VP.Vector offset len (P.ByteArray arr#)) =
-  let
-    elemSize = P.sizeOf (undefined :: a)
-    byteOff = offset * elemSize
-    byteLen = len * elemSize
-  in
-    Hashable.hashByteArrayWithSalt arr# byteOff byteLen salt
-
 
 makeLenses ''Graph
 makeLenses ''NodeData
@@ -142,8 +142,8 @@ nodeClasses g
       , let classRef = classOf ref g
       ]
 
-union :: (Eq n, Hashable n) => Ref -> Ref -> Graph n -> Graph n
-union ref1 ref2 = execState $
+equalize :: (Eq n, Hashable n) => Ref -> Ref -> Graph n -> Graph n
+equalize ref1 ref2 = execState $
   zoom unionFind (state $ UF.union ref1 ref2) >>= \case
     -- Already equal
     Nothing -> pure ()
@@ -174,4 +174,64 @@ union ref1 ref2 = execState $
 
       congruences <- computeParentUnions HashMap.empty parents []
       -- Merge those parents in turn
-      for_ congruences $ \(p1, p2) -> id %= union p1 p2
+      for_ congruences $ \(p1, p2) -> id %= equalize p1 p2
+
+
+-- | Generate a GraphViz DOT representation of the equality-saturation graph.
+dot :: (Show n, Eq n, Hashable n) => Graph n -> String
+dot g = unlines $ header ++ clusterLines ++ edgeLines ++ footer
+  where
+    header =
+        [ "digraph ast {"
+        , "  compound=true;"
+        ]
+    clusterLines = concatMap (map (indent 2) . mkCluster) $ HashMap.toList clusters
+    edgeLines = concatMap (map (indent 2) . mkEdges) allNodes
+    footer = ["}"]
+
+    clusters = HashMap.fromListWith (++)
+      [ (repr, [(ref, nodeData)])
+      | (ref, nodeData) <- allNodes
+      , let repr = classOf ref g
+      ]
+
+    allNodes = HashMap.toList $ view nodes g
+
+    indent i = (replicate i ' ' ++)
+
+    mkCluster (Ref reprId, clusterNodes) =
+      let
+        clusterHeader = [ "subgraph cluster_" ++ show reprId ++ " {" ]
+        nodeLines = concatMap (map (indent 2) . mkNode) clusterNodes
+        clusterFooter = ["}"]
+      in
+        clusterHeader ++ nodeLines ++ clusterFooter
+
+    mkNode (ref, nodeData) =
+      let Node label _ = view nodeSelf nodeData
+       in [mkNodeId ref ++ "[label=" ++ show label ++ "];"]
+
+    mkEdges (ref, nodeData) =
+      let Node _ children = view nodeSelf nodeData
+       in [ edgeLine
+          | (index, target) <- zip [0 :: Int ..] $ VP.toList children
+          , edgeLine <- mkEdge index ref target
+          ]
+
+    mkEdge index from to
+      -- If the node points to the same cluster, we need an invisible extra node
+      | toRepr == classOf from g =
+          let
+            helperNode = "helper_" ++ show index ++ "_" ++ mkNodeId from ++ "_" ++ mkNodeId to
+          in
+            [ helperNode ++ "[shape=point height=0];" -- invisible
+            , mkNodeId to ++ " -> " ++ helperNode ++ "[dir=back ltail=cluster_" ++ show toReprId ++ "];"
+            , helperNode ++ " -> " ++ mkNodeId from ++ "[dir=none, arrowhead=none];"
+            ]
+      | otherwise =
+          [ mkNodeId from ++ " -> " ++ mkNodeId to ++ " [lhead=cluster_" ++ show toReprId ++ "]" ]
+      where
+        toRepr@(Ref toReprId) = classOf to g
+
+
+    mkNodeId (Ref ref) = "node_" ++ show ref

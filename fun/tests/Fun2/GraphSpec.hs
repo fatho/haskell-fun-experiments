@@ -4,29 +4,13 @@
 module Fun2.GraphSpec where
 
 import Control.Monad.State.Strict (State, runState, state, modify)
-import Data.Hashable (Hashable (hash))
 import Test.Hspec (Spec, describe, it, shouldBe, shouldNotBe)
 
-import qualified Data.Vector.Primitive as VP
-
-import Fun2.Graph (Graph, Node (..), Ref (..))
+import Fun2.Graph (Graph, Node (..))
 import qualified Fun2.Graph as Graph
 
 spec :: Spec
 spec = do
-  describe "Nodes" $ do
-    it "can be hashed" $ do
-      let
-        largeVec = VP.fromList [Ref 0, Ref 1, Ref 2, Ref 0, Ref 1, Ref 4]
-        -- make sure the hashing works independent of where in the underlying
-        -- bytearray the vector points
-        n1 = Node "+" (VP.slice 0 2 largeVec)
-        n2 = Node "+" (VP.slice 2 2 largeVec)
-        n3 = Node "+" (VP.slice 3 2 largeVec)
-
-      hash n1 `shouldBe` hash n3
-      hash n1 `shouldNotBe` hash n2
-
   describe "Graph" $ do
     it "interns" $ do
       let
@@ -56,23 +40,23 @@ spec = do
       Graph.classOf ref2 g `shouldBe` ref2
       Graph.classOf ref3 g `shouldBe` ref3
 
-    it "unions" $ do
+    it "equalizes" $ do
       let
-        (ref0, g) = buildGraph $ do
+        ((ref0, ref1, ref2, ref3), g) = buildGraph $ do
           ref0 <- state $ Graph.insert (Node "0" [])
           ref1 <- state $ Graph.insert (Node "1" [])
           ref2 <- state $ Graph.insert (Node "+" [ref0, ref1])
-          _ <- state $ Graph.insert (Node "+" [ref0, ref2])
-          -- 1 + 0 == 0, so we can union the two
-          modify $ Graph.union ref1 ref2
-          pure ref0
+          ref3 <- state $ Graph.insert (Node "+" [ref0, ref2])
+          -- 1 + 0 == 0, so we can equalize the two
+          modify $ Graph.equalize ref1 ref2
+          pure (ref0, ref1, ref2, ref3)
 
       Graph.classOf ref0 g `shouldBe` ref0
       Graph.nodeClasses g `shouldBe`
-        [ [ (Ref 0,Node "0" []) ]
-        , [ (Ref 1,Node "1" [])
-          , (Ref 2,Node "+" [Ref 0,Ref 1])
-          , (Ref 3,Node "+" [Ref 0,Ref 2]) ]
+        [ [ (ref0,Node "0" []) ]
+        , [ (ref1,Node "1" [])
+          , (ref2,Node "+" [ref0, ref1])
+          , (ref3,Node "+" [ref0, ref2]) ]
         ]
 
 
