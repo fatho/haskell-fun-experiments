@@ -52,9 +52,9 @@ spec = do
           ref3 <- state $ Graph.insert (Node "+" [ref1, ref2])
           pure (ref1, ref2, ref3)
 
-      Graph.find ref1 g `shouldBe` ref1
-      Graph.find ref2 g `shouldBe` ref2
-      Graph.find ref3 g `shouldBe` ref3
+      Graph.classOf ref1 g `shouldBe` ref1
+      Graph.classOf ref2 g `shouldBe` ref2
+      Graph.classOf ref3 g `shouldBe` ref3
 
     it "unions" $ do
       let
@@ -67,7 +67,7 @@ spec = do
           modify $ Graph.union ref1 ref2
           pure ref0
 
-      Graph.find ref0 g `shouldBe` ref0
+      Graph.classOf ref0 g `shouldBe` ref0
       Graph.nodeClasses g `shouldBe`
         [ [ (Ref 0,Node "0" []) ]
         , [ (Ref 1,Node "1" [])

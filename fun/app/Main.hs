@@ -29,7 +29,7 @@ main = do
 
       let
         refs = [ref1, ref2, ref3, ref4, ref5, ref6, ref7, ref8, ref9] :: [Ref]
-      (,) refs <$> traverse (gets . Graph.find) refs
+      (,) refs <$> traverse (gets . Graph.classOf) refs
 
   hPrint stderr info
   putStrLn $ Dot.dot g

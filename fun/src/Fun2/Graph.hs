@@ -12,10 +12,8 @@
 
 module Fun2.Graph where
 
-import Control.Lens (Ixed (ix), at, makeLenses, use, uses, view, (%=), (+=), (.=), (<<%=), (<<.=),
-                     (<>=))
-import Control.Monad (unless, when)
-import Control.Monad.State.Strict (evalState, execState, gets, runState)
+import Control.Lens (Ixed (ix), at, makeLenses, use, uses, view, zoom, (%=), (<<%=), (<<.=), (<>=))
+import Control.Monad.State.Strict (execState, gets, runState, state)
 import Data.Foldable (for_)
 import Data.HashMap.Strict (HashMap)
 import Data.HashSet (HashSet)
@@ -31,6 +29,8 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Primitive as P
 import qualified Data.Vector.Primitive as VP
 
+import Fun2.UnionFind (UnionFind)
+import qualified Fun2.UnionFind as UF
 
 -- | Invariant: nodes always point to set-representants
 data Graph n = Graph
@@ -38,7 +38,7 @@ data Graph n = Graph
 
   , _interner  :: !(HashMap (Node n) Ref)
   , _nodes     :: !(HashMap Ref (NodeData n))
-  , _unionFind :: !(HashMap Ref UnionFindRec)
+  , _unionFind :: !(UnionFind Ref)
   , _classes   :: !(HashMap Ref ClassData)
   }
   deriving (Show, Eq)
@@ -46,12 +46,6 @@ data Graph n = Graph
 data NodeData n = NodeData
   { _nodeSelf    :: !(Node n)
   , _nodeParents :: !(HashSet Ref)
-  }
-  deriving (Show, Eq)
-
-data UnionFindRec = UnionFindRec
-  { _setParent :: !Ref
-  , _setRank   :: !Rank
   }
   deriving (Show, Eq)
 
@@ -95,7 +89,6 @@ hashPrimVectorWithSalt salt (VP.Vector offset len (P.ByteArray arr#)) =
 
 makeLenses ''Graph
 makeLenses ''NodeData
-makeLenses ''UnionFindRec
 makeLenses ''ClassData
 
 instance Semigroup ClassData where
@@ -112,20 +105,20 @@ empty = Graph
   { _freshRef = Ref 0
   , _interner = HashMap.empty
   , _nodes = HashMap.empty
-  , _unionFind = HashMap.empty
+  , _unionFind = UF.empty
   , _classes = HashMap.empty
   }
 
 insert :: (Eq n, Hashable n) => Node n -> Graph n -> (Ref, Graph n)
 insert (Node ty children) = runState $ do
-  classChildren <- gets $ \g -> VP.map (`find` g) children
+  classChildren <- gets $ \g -> VP.map (`classOf` g) children
   let node = Node ty classChildren
   interner `uses` HashMap.lookup node >>= \case
     Nothing -> do
       ref <- freshRef <<%= succRef
       interner %= HashMap.insert node ref
       nodes %= HashMap.insert ref (NodeData node mempty)
-      unionFind %= HashMap.insert ref (UnionFindRec ref 0)
+      unionFind %= UF.insert ref
       classes %= HashMap.insert ref (ClassData (HashSet.singleton ref) mempty)
       -- Add back-edges from children to parent
       VP.forM_ classChildren $ \child -> do
@@ -135,20 +128,8 @@ insert (Node ty children) = runState $ do
     Just ref -> pure ref
 
 
-findWithRank :: Ref -> Graph n -> (Ref, Rank)
-findWithRank start = evalState (go start)
-  where
-    go ref = do
-      unionFind `uses` HashMap.lookup ref >>= \case
-        Nothing -> error $ "Node not part of this graph " ++ show ref
-        Just uf
-          | parent == ref -> pure (ref, view setRank uf)
-          | otherwise -> go parent
-          where
-            parent = view setParent uf
-
-find :: Ref -> Graph n -> Ref
-find start = fst . findWithRank start
+classOf :: Ref -> Graph n -> Ref
+classOf start = UF.find start . _unionFind
 
 nodeClasses :: Graph n -> [[(Ref, Node n)]]
 nodeClasses g
@@ -158,33 +139,19 @@ nodeClasses g
     nodesByClass = Map.fromListWith (++)
       [ (classRef, [(ref, view nodeSelf nd)])
       | (ref, nd) <- HashMap.toList $ _nodes g
-      , let classRef = find ref g
+      , let classRef = classOf ref g
       ]
 
 union :: (Eq n, Hashable n) => Ref -> Ref -> Graph n -> Graph n
-union ref1 ref2 = execState $ do
-  (class1, rank1) <- gets (findWithRank ref1)
-  (class2, rank2) <- gets (findWithRank ref2)
-
-  unless (class1 == class2) $ do
-    if rank1 < rank2
-      then do
-        -- make class2 parent of class1
-        unionFind . ix class1 . setParent .= class2
-        class1Data <- classes . at class1 <<.= Nothing
-        for_ class1Data $ \cd -> classes . ix class2 <>= cd
-        propagateUnions class2
-      else do
-        -- otherwise, put class2 into class1
-        unionFind . ix class2 . setParent .= class1
-        class2Data <- classes . at class2 <<.= Nothing
-        for_ class2Data $ \cd -> classes . ix class1 <>= cd
-        when (rank1 == rank2) $ do
-          unionFind . ix class1 . setRank += 1
-
-        propagateUnions class1
-
-
+union ref1 ref2 = execState $
+  zoom unionFind (state $ UF.union ref1 ref2) >>= \case
+    -- Already equal
+    Nothing -> pure ()
+    Just unioned -> do
+      -- Update internal data structures
+      absorbedData <- classes . at (UF.unionAbsorbed unioned) <<.= Nothing
+      for_ absorbedData $ \cd -> classes . ix (UF.unionInto unioned) <>= cd
+      propagateUnions $ UF.unionInto unioned
   where
     -- Unioning two nodes could mean that two disjoint nodes referencing them now become equal
     -- as well. For example, suppose we have the expressions @x + y@ and @x + 1@.
@@ -199,7 +166,7 @@ union ref1 ref2 = execState $ do
             Nothing -> error $ "Invariant violated: missing node " ++ show parentRef
             Just nd -> do
               let Node ty children = view nodeSelf nd
-              classChildren <- gets $ \g -> VP.map (`find` g) children
+              classChildren <- gets $ \g -> VP.map (`classOf` g) children
               let normalNode = Node ty classChildren
               case HashMap.lookup normalNode seen of
                 Nothing -> computeParentUnions (HashMap.insert normalNode parentRef seen) rest acc

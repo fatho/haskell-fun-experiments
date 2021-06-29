@@ -22,7 +22,7 @@ dot g = unlines $ header ++ clusterLines ++ edgeLines ++ footer
     clusters = HashMap.fromListWith (++)
       [ (repr, [(ref, nodeData)])
       | (ref, nodeData) <- allNodes
-      , let repr = find ref g
+      , let repr = classOf ref g
       ]
 
     allNodes = HashMap.toList $ view nodes g
@@ -50,7 +50,7 @@ dot g = unlines $ header ++ clusterLines ++ edgeLines ++ footer
 
     mkEdge index from to
       -- If the node points to the same cluster, we need an invisible extra node
-      | toRepr == find from g =
+      | toRepr == classOf from g =
           let
             helperNode = "helper_" ++ show index ++ "_" ++ mkNodeId from ++ "_" ++ mkNodeId to
           in
@@ -61,7 +61,7 @@ dot g = unlines $ header ++ clusterLines ++ edgeLines ++ footer
       | otherwise =
           [ mkNodeId from ++ " -> " ++ mkNodeId to ++ " [lhead=cluster_" ++ show toReprId ++ "]" ]
       where
-        toRepr@(Ref toReprId) = find to g
+        toRepr@(Ref toReprId) = classOf to g
 
 
     mkNodeId (Ref ref) = "node_" ++ show ref
