@@ -14,16 +14,23 @@ module Fun2.Graph
   ( Graph
   , Ref
   , Node (..)
+  -- * Constructing graphs
   , empty
   , insert
-  , classOf
-  , classNodes
   , equalize
+  -- * Inspecting nodes
+  , classOf
+  , canonicalOf
+  , nodeOf
+  -- * Inspecting graph
+  , classNodes
   , classes
   , dot
+  -- * Tests
+  , checkInvariants
   ) where
 
-import Control.Lens (Ixed (ix), at, makeLenses, use, uses, view, zoom, (%=), (<<%=), (<<.=), (<>=))
+import Control.Lens (Ixed (ix), at, makeLenses, use, uses, view, zoom, (%=), (<<%=), (<<.=), (<>=), (.=))
 import Control.Monad.State.Strict (execState, gets, runState, state)
 import Data.Foldable (for_)
 import Data.HashMap.Strict (HashMap)
@@ -42,6 +49,7 @@ import qualified Data.Vector.Primitive as VP
 import Fun2.UnionFind (UnionFind)
 import qualified Fun2.UnionFind as UF
 import Fun2.Util (hashPrimVectorWithSalt)
+import Control.Monad (when)
 
 -- | A term graph supporting equivalence relations.
 data Graph n = Graph
@@ -61,6 +69,10 @@ data Graph n = Graph
   , _graphClasses   :: !(HashMap Ref ClassData)
     -- ^ Meta-data about the equivalence classes
     -- Invariant: the keys in this map are exactly the class representatives
+
+  , _graphCanonicalClasses :: !(HashMap (Node n) Ref)
+    -- ^ Mapping canonicalized nodes to equivalence classes.
+    -- Used for inserting new nodes into the correct class.
   }
   deriving (Show, Eq)
 
@@ -70,6 +82,9 @@ data NodeData n = NodeData
     -- ^ The actual node
   , _nodeDataParents :: !(HashSet Ref)
     -- ^ The set of nodes pointing to this node
+  , _nodeDataCanonical :: !(Node n)
+    -- ^ Canonicalized representation of this node, i.e.
+    -- all children point to the respective class representants.
   }
   deriving (Show, Eq)
 
@@ -121,32 +136,57 @@ empty = Graph
   , _graphNodes = HashMap.empty
   , _graphUnionFind = UF.empty
   , _graphClasses = HashMap.empty
+  , _graphCanonicalClasses = HashMap.empty
   }
 
 -- | Insert a new node into the graph and return its id and the modified graph.
---
--- TODO: ensure that new nodes are inserted into the correct equivalence class if an equivalent node
--- already exists (by congruence, as exactly identical nodes are already interned).
 insert :: (Eq n, Hashable n) => Node n -> Graph n -> (Ref, Graph n)
-insert node@(Node _ children) = runState $ do
+insert node@(Node nty children) = runState $ do
   graphInterner `uses` HashMap.lookup node >>= \case
     Nothing -> do
+      children' <- gets $ \g -> VP.map (`classOf` g) children
+      let canonicalNode = Node nty children'
+
       ref <- graphFreshRef <<%= succRef
       graphInterner %= HashMap.insert node ref
-      graphNodes %= HashMap.insert ref (NodeData node mempty)
+      graphNodes %= HashMap.insert ref NodeData
+        { _nodeDataSelf = node
+        , _nodeDataParents = mempty
+        , _nodeDataCanonical = canonicalNode
+        }
       graphUnionFind %= UF.insert ref
       graphClasses %= HashMap.insert ref (ClassData (HashSet.singleton ref) mempty)
       -- Add back-edges from children to parent
       VP.forM_ children $ \child -> do
         graphNodes . ix child . nodeDataParents %= HashSet.insert ref
-        childClass <- gets $ classOf child
+      VP.forM_ children' $ \childClass -> do
         graphClasses . ix childClass . classDataParents %= HashSet.insert ref
+
+      refClass <- use (graphCanonicalClasses . at canonicalNode) >>= \case
+        Nothing -> do
+          graphCanonicalClasses . at canonicalNode .= Just ref
+          pure ref
+        Just existingClass -> pure existingClass
+      id %= equalize ref refClass
+
       pure ref
     Just ref -> pure ref
 
 -- | Get the class-representing node of an arbitrary node in the graph.
 classOf :: Ref -> Graph n -> Ref
 classOf ref = UF.find ref . _graphUnionFind
+
+-- | Get the class-representing node of an arbitrary node in the graph.
+canonicalOf :: Ref -> Graph n -> Node n
+canonicalOf ref = view (graphNodes . at ref) >>= \case
+  Nothing -> error $ "Invariant violated: " ++ show ref ++ " is not part of graph"
+  Just nd -> pure $ view nodeDataCanonical nd
+
+-- | Get the class-representing node of an arbitrary node in the graph.
+nodeOf :: Ref -> Graph n -> Node n
+nodeOf ref = view (graphNodes . at ref) >>= \case
+  Nothing -> error $ "Invariant violated: " ++ show ref ++ " is not part of graph"
+  Just nd -> pure $ view nodeDataSelf nd
 
 -- | Return the nodes that are part of the same equivalence class as the given node.
 classNodes :: Ref -> Graph n -> HashSet Ref
@@ -193,9 +233,15 @@ equalize ref1 ref2 = execState $
         computeParentUnions seen (parentRef:rest) acc = use (graphNodes . at parentRef) >>= \case
             Nothing -> error $ "Invariant violated: missing node " ++ show parentRef
             Just nd -> do
-              let Node ty children = view nodeDataSelf nd
+              let
+                Node ty children = view nodeDataSelf nd
+                oldCanonical@(Node _ oldClassChildren) = view nodeDataCanonical nd
               classChildren <- gets $ \g -> VP.map (`classOf` g) children
               let normalNode = Node ty classChildren
+              when (oldClassChildren /= classChildren) $ do
+                graphNodes . ix parentRef . nodeDataCanonical .= normalNode
+                graphCanonicalClasses . at oldCanonical .= Nothing
+                graphCanonicalClasses . at normalNode .= Just parentRef
               case HashMap.lookup normalNode seen of
                 Nothing -> computeParentUnions (HashMap.insert normalNode parentRef seen) rest acc
                 Just existing -> computeParentUnions seen rest ((parentRef, existing):acc)
@@ -263,3 +309,30 @@ dot g = unlines $ header ++ clusterLines ++ edgeLines ++ footer
 
 
     mkNodeId (Ref ref) = "node_" ++ show ref
+
+-- | Return a human readable list of the violated invariants.
+-- If the returned list is empty, it means the Graph data structure is valid.
+-- Intented to be used in tests.
+checkInvariants :: (Hashable n, Eq n) => Graph n -> [String]
+checkInvariants g = 
+    checkCanonical ++ checkCanonicalLookup
+  where
+    checkCanonical =
+      [ show ref ++ ": canonical children are " ++ show classChildren ++ " but should be " ++ show children'
+      | (ref, nd) <- HashMap.toList $ _graphNodes g
+      , let Node _ classChildren = _nodeDataCanonical nd
+      , let Node _ children = _nodeDataSelf nd
+      , let children' = VP.map (`classOf` g) children
+      , classChildren /= children'
+      ]
+
+    checkCanonicalLookup =
+      [ err
+      | (ref, nd) <- HashMap.toList $ _graphNodes g
+      , err <- case HashMap.lookup (_nodeDataCanonical nd) (_graphCanonicalClasses g) of
+          Nothing -> pure $ show ref ++ ": canonical representation not in canonical lookup"
+          Just classRef
+            | classOf classRef g == classOf ref g -> []
+            | otherwise -> pure $ show ref ++ ": canonical lookup points to " ++
+                show (classOf classRef g) ++ " but should point to " ++ show (classOf ref g)
+      ]
